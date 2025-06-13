@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  nmapscanner:
+    build:
+      context: ./Nmap
+      dockerfile: Dockerfile
+    container_name: nmapscanner
+    volumes:
+      - ./results:/app/results
+    working_dir: /app
+    entrypoint: ["python3", "nmapscan.py"]
+    networks:
+      - secnet
+
+  tshark:
+    build:
+      context: ./Tshark
+      dockerfile: Dockerfile
+    container_name: tshark
+    volumes:
+      - ./results:/app/results
+    working_dir: /app
+    entrypoint: ["python3", "capture_tshark.py"]
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    network_mode: host
+
+  zap:
+    image: zaproxy/zap-stable
+    container_name: zap
+    command:
+      [
+        "zap.sh",
+        "-daemon",
+        "-host", "0.0.0.0",
+        "-port", "8080",
+        "-config", "api.disablekey=true",
+        "-config", "api.addrs.addr.name=.*",
+        "-config", "api.addrs.addr.regex=true"
+      ]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./results:/zap/wrk
+    networks:
+      - zapnet
+    healthcheck:
+      test: ["CMD", "curl", "-s", "http://localhost:8080"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zapscanner:
+    build:
+      context: ./Zap-Owsap
+      dockerfile: Dockerfile
+    container_name: zapscanner
+    depends_on:
+      zap:
+        condition: service_healthy
+    environment:
+      - TARGET_URL
+      - ZAP_API_URL=http://zap:8080
+    volumes:
+      - ./results:/app/results
+    networks:
+      - zapnet
+
+  forensiclab:
+    build:
+      context: ./Forensic
+      dockerfile: Dockerfile
+    container_name: forensiclab
+    volumes:
+      - ./samples:/data:ro      # Dossier source des fichiers à analyser
+      - ./rules:/rules:ro       # Règles YARA
+      - ./results:/output       # Dossier des résultats JSON
+      - ./logs:/logs           # Dossier pour les logs d'analyse
+      - ./reports:/reports     # Dossier pour les rapports détaillés
+    environment:
+      - PYTHONUNBUFFERED=1     # Pour un meilleur logging
+      - TZ=UTC                 # Timezone pour les timestamps
+    working_dir: /Forensic
+    cap_add:
+      - SYS_ADMIN              # Pour l'accès aux fonctionnalités système
+      - NET_ADMIN              # Pour l'analyse réseau
+    security_opt:
+      - seccomp:unconfined     # Pour permettre l'utilisation d'outils forensiques
+    entrypoint: [ "tail", "-f", "/dev/null" ]  # Garde le conteneur ouvert pour exécution manuelle
+    networks:
+      - secnet
+
+volumes:
+  postgres_data:
+
+networks:
+  secnet:
+    driver: bridge
+  zapnet:
+    driver: bridge 
